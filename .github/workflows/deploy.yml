@@ -1,0 +1,239 @@
+name: CI/CD Pipeline — Build, Test, Push to ECR, Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  WEBAPP_REPO: project2-webapp
+  BATCH_REPO: project2-batch-worker
+
+jobs:
+  # -----------------------------------------------
+  # JOB 1: RUN TESTS
+  # -----------------------------------------------
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          cd webapp
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          cd webapp
+          python -m pytest tests/ -v
+
+      - name: Print test results
+        if: always()
+        run: echo "Tests completed!"
+
+  # -----------------------------------------------
+  # JOB 2: BUILD AND PUSH WEBAPP TO ECR
+  # -----------------------------------------------
+  build-webapp:
+    name: Build and Push WebApp to ECR
+    runs-on: ubuntu-latest
+    needs: test
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Generate image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: |
+          cd webapp
+          docker build -t $ECR_REGISTRY/$WEBAPP_REPO:${{ steps.meta.outputs.tag }} .
+          docker tag $ECR_REGISTRY/$WEBAPP_REPO:${{ steps.meta.outputs.tag }} \
+            $ECR_REGISTRY/$WEBAPP_REPO:latest
+
+      - name: Push to ECR
+        run: |
+          docker push $ECR_REGISTRY/$WEBAPP_REPO:${{ steps.meta.outputs.tag }}
+          docker push $ECR_REGISTRY/$WEBAPP_REPO:latest
+          echo "WebApp image pushed: $ECR_REGISTRY/$WEBAPP_REPO:${{ steps.meta.outputs.tag }}"
+
+  # -----------------------------------------------
+  # JOB 3: BUILD AND PUSH BATCH WORKER TO ECR
+  # -----------------------------------------------
+  build-batch:
+    name: Build and Push Batch Worker to ECR
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push batch worker image
+        run: |
+          cd batch-worker
+          docker build -t $ECR_REGISTRY/$BATCH_REPO:${{ github.sha }} .
+          docker tag $ECR_REGISTRY/$BATCH_REPO:${{ github.sha }} \
+            $ECR_REGISTRY/$BATCH_REPO:latest
+          docker push $ECR_REGISTRY/$BATCH_REPO:${{ github.sha }}
+          docker push $ECR_REGISTRY/$BATCH_REPO:latest
+          echo "Batch worker image pushed!"
+
+  # -----------------------------------------------
+  # JOB 4: DEPLOY TO EC2 VIA SSM
+  # -----------------------------------------------
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: [build-webapp, build-batch]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to WebServer 1 via SSM
+        run: |
+          aws ssm send-command \
+            --region ${{ secrets.AWS_REGION }} \
+            --instance-ids ${{ secrets.EC2_INSTANCE_1 }} \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com",
+              "docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/project2-webapp:latest",
+              "docker stop webapp || true",
+              "docker rm webapp || true",
+              "docker run -d --name webapp --restart always -p 80:5000 -e APP_VERSION=${{ github.sha }} ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/project2-webapp:latest",
+              "echo Deployment to Instance 1 complete!"
+            ]' \
+            --output text
+
+      - name: Wait 30 seconds before deploying to Instance 2
+        run: sleep 30
+
+      - name: Deploy to WebServer 2 via SSM
+        run: |
+          aws ssm send-command \
+            --region ${{ secrets.AWS_REGION }} \
+            --instance-ids ${{ secrets.EC2_INSTANCE_2 }} \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com",
+              "docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/project2-webapp:latest",
+              "docker stop webapp || true",
+              "docker rm webapp || true",
+              "docker run -d --name webapp --restart always -p 80:5000 -e APP_VERSION=${{ github.sha }} ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/project2-webapp:latest",
+              "echo Deployment to Instance 2 complete!"
+            ]' \
+            --output text
+
+      - name: Deployment summary
+        run: |
+          echo "========================================="
+          echo "Deployment Complete!"
+          echo "Image Tag: ${{ github.sha }}"
+          echo "Deployed to: Instance 1 and Instance 2"
+          echo "========================================="
+
+  # -----------------------------------------------
+  # JOB 5: NOTIFY VIA SNS
+  # -----------------------------------------------
+  notify:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: always()
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Create SNS topic if not exists
+        run: |
+          aws sns create-topic \
+            --name project2-deployments \
+            --region ${{ secrets.AWS_REGION }} || true
+
+      - name: Get SNS topic ARN
+        id: sns
+        run: |
+          ARN=$(aws sns list-topics \
+            --region ${{ secrets.AWS_REGION }} \
+            --query 'Topics[?contains(TopicArn, `project2-deployments`)].TopicArn' \
+            --output text)
+          echo "arn=$ARN" >> $GITHUB_OUTPUT
+
+      - name: Subscribe email to SNS
+        run: |
+          aws sns subscribe \
+            --topic-arn ${{ steps.sns.outputs.arn }} \
+            --protocol email \
+            --notification-endpoint dileep81.b@gmail.com \
+            --region ${{ secrets.AWS_REGION }} || true
+
+      - name: Send success notification
+        if: needs.deploy.result == 'success'
+        run: |
+          aws sns publish \
+            --topic-arn ${{ steps.sns.outputs.arn }} \
+            --subject "Deployment Successful - Project 2" \
+            --message "CI/CD Pipeline completed successfully! Image: ${{ github.sha }} deployed to EC2 instances." \
+            --region ${{ secrets.AWS_REGION }}
+
+      - name: Send failure notification
+        if: needs.deploy.result == 'failure'
+        run: |
+          aws sns publish \
+            --topic-arn ${{ steps.sns.outputs.arn }} \
+            --subject "Deployment FAILED - Project 2" \
+            --message "CI/CD Pipeline FAILED! Check GitHub Actions logs for details. Commit: ${{ github.sha }}" \
+            --region ${{ secrets.AWS_REGION }}
