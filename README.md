@@ -22,3 +22,4 @@ EC2 | ECR | Docker | GitHub Actions | SQS | S3 | CloudWatch | IAM | ALB | ASG
 7. SNS notification on success/failure
 
 ## Project Structure
+# Updated
