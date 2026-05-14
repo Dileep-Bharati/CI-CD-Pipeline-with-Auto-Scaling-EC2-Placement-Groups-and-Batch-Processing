@@ -54,4 +54,21 @@ project2/
 - Automated deployment via GitHub Actions and SSM
 
 ##What We built in Project 2:
-ComponentStatusVPC with 2 public subnets✅ Done4 Security Groups✅ DoneEC2 Placement Groups (Cluster + Spread)✅ DoneECR Repositories (webapp + batch-worker)✅ DoneFlask Web Application✅ DoneBatch Worker Python App✅ DoneGitHub Repository with code✅ DoneIAM Roles and GitHub Actions user✅ Done3 EC2 Instances with proper roles✅ DoneSQS Queue + Dead Letter Queue✅ DoneS3 Results Bucket✅ DoneGitHub Actions Pipeline (5 jobs)✅ DoneApplication Load Balancer✅ DoneBatch Worker processing SQS jobs✅ DoneCloudWatch Logs + Dashboard✅ DoneCloudWatch Alarms (CPU, ALB, SQS)✅ DoneSNS Email Notifications✅ DoneEnd to End testing
+VPC with 2 public subnets✅ Done4 
+Security Groups✅ Done
+EC2 Placement Groups (Cluster + Spread)✅ Done
+ECR Repositories (webapp + batch-worker)✅ Done
+Flask Web Application✅ Done
+Batch Worker Python App✅ Done
+GitHub Repository with code✅ Done
+IAM Roles and GitHub Actions user✅ Done
+EC2 Instances with proper roles✅ Done
+SQS Queue + Dead Letter Queue✅ Done
+S3 Results Bucket✅ Done
+GitHub Actions Pipeline (5 jobs)✅ Done
+Application Load Balancer✅ Done
+Batch Worker processing SQS jobs✅ Done
+CloudWatch Logs + Dashboard✅ Done
+CloudWatch Alarms (CPU, ALB, SQS)✅ Done
+SNS Email Notifications✅ Done
+End to End testing✅ Done
